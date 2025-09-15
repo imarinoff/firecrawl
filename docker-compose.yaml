@@ -12,6 +12,7 @@ x-common-service: &common-service
       hard: 65535
   networks:
     - backend
+    - easypanel
   extra_hosts:
     - "host.docker.internal:host-gateway"
 
@@ -59,6 +60,7 @@ services:
       BLOCK_MEDIA: ${BLOCK_MEDIA}
     networks:
       - backend
+      - easypanel
 
   api:
     <<: *common-service
@@ -71,8 +73,6 @@ services:
     depends_on:
       - redis
       - playwright-service
-    ports:
-      - "${PORT:-3002}:${INTERNAL_PORT:-3002}"
     command: node dist/src/harness.js --start-docker
 
   redis:
@@ -84,6 +84,7 @@ services:
 
     networks:
       - backend
+      - easypanel
     command: redis-server --bind 0.0.0.0
   
   nuq-postgres:
@@ -94,9 +95,8 @@ services:
       POSTGRES_DB: postgres
     networks:
       - backend
-    ports:
-      - "5432:5432"
+      - easypanel
 
 networks:
+  easypanel:
   backend:
-    driver: bridge
