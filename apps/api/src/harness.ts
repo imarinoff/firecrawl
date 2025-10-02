@@ -17,6 +17,7 @@ interface Services {
   api?: ProcessResult;
   worker?: ProcessResult;
   nuqWorkers: ProcessResult[];
+  nuqPrefetchWorker?: ProcessResult;
   indexWorker?: ProcessResult;
   command?: ProcessResult;
 }
@@ -68,6 +69,9 @@ function formatDuration(nanoseconds: bigint): string {
 
 const stream = createWriteStream("firecrawl.log");
 
+// Get the port from environment variable, defaulting to 3002
+const PORT = process.env.PORT ?? "3002";
+
 const logger = {
   section(message: string) {
     console.log(
@@ -116,7 +120,7 @@ const logger = {
 function waitForPort(
   port: number,
   host: string,
-  timeoutMs = 20000,
+  timeoutMs = 30000,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -320,20 +324,22 @@ function startServices(command?: string[]): Services {
   const api = execForward(
     "api",
     process.argv[2] === "--start-docker"
-      ? "node dist/src/index.js"
+      ? "node --import ./dist/src/otel.js dist/src/index.js"
       : "pnpm server:production:nobuild",
     {
       NUQ_REDUCE_NOISE: "true",
+      NUQ_POD_NAME: "api",
     },
   );
 
   const worker = execForward(
     "worker",
     process.argv[2] === "--start-docker"
-      ? "node dist/src/services/queue-worker.js"
+      ? "node --import ./dist/src/otel.js dist/src/services/queue-worker.js"
       : "pnpm worker:production",
     {
       NUQ_REDUCE_NOISE: "true",
+      NUQ_POD_NAME: "worker",
     },
   );
 
@@ -341,24 +347,41 @@ function startServices(command?: string[]): Services {
     execForward(
       `nuq-worker-${i}`,
       process.argv[2] === "--start-docker"
-        ? "node dist/src/services/worker/nuq-worker.js"
+        ? "node --import ./dist/src/otel.js dist/src/services/worker/nuq-worker.js"
         : "pnpm nuq-worker:production",
       {
         NUQ_WORKER_PORT: String(3006 + i),
         NUQ_REDUCE_NOISE: "true",
+        NUQ_POD_NAME: `nuq-worker-${i}`,
       },
     ),
   );
+
+  const nuqPrefetchWorker =
+    process.env.NUQ_RABBITMQ_URL
+      ? execForward(
+          "nuq-prefetch-worker",
+          process.argv[2] === "--start-docker"
+            ? "node --import ./dist/src/otel.js dist/src/services/worker/nuq-prefetch-worker.js"
+            : "pnpm nuq-prefetch-worker:production",
+          {
+            NUQ_PREFETCH_WORKER_PORT: String(3011),
+            NUQ_REDUCE_NOISE: "true",
+            NUQ_POD_NAME: "nuq-prefetch-worker",
+          },
+        )
+      : undefined;
 
   const indexWorker =
     process.env.USE_DB_AUTHENTICATION === "true"
       ? execForward(
           "index-worker",
           process.argv[2] === "--start-docker"
-            ? "node dist/src/services/indexing/index-worker.js"
+            ? "node --import ./dist/src/otel.js dist/src/services/indexing/index-worker.js"
             : "pnpm index-worker:production",
           {
             NUQ_REDUCE_NOISE: "true",
+            NUQ_POD_NAME: "index-worker",
           },
         )
       : undefined;
@@ -368,7 +391,14 @@ function startServices(command?: string[]): Services {
       ? execForward("command", command)
       : undefined;
 
-  return { api, worker, nuqWorkers, indexWorker, command: commandProcess };
+  return {
+    api,
+    worker,
+    nuqWorkers,
+    nuqPrefetchWorker,
+    indexWorker,
+    command: commandProcess,
+  };
 }
 
 async function stopServices(services: Services) {
@@ -376,6 +406,8 @@ async function stopServices(services: Services) {
     services.api && terminateProcess(services.api.process),
     services.worker && terminateProcess(services.worker.process),
     ...services.nuqWorkers.map(w => terminateProcess(w.process)),
+    services.nuqPrefetchWorker &&
+      terminateProcess(services.nuqPrefetchWorker.process),
     services.indexWorker && terminateProcess(services.indexWorker.process),
     services.command && terminateProcess(services.command.process),
   ].filter(Boolean);
@@ -400,8 +432,8 @@ async function runDevMode(): Promise<void> {
 
     currentServices = startServices();
 
-    logger.info("Waiting for API on localhost:3002");
-    await waitForPort(3002, "localhost");
+    logger.info(`Waiting for API on localhost:${PORT}`);
+    await waitForPort(Number(PORT), "localhost");
     logger.success("API is ready");
 
     isFirstStart = false;
@@ -416,7 +448,7 @@ async function runDevMode(): Promise<void> {
 
       currentServices = startServices();
 
-      await waitForPort(3002, "localhost");
+      await waitForPort(Number(PORT), "localhost");
       logger.success("Services restarted");
     }
   });
@@ -442,8 +474,8 @@ async function runDevMode(): Promise<void> {
 async function runProductionMode(command: string[]): Promise<void> {
   const services = startServices(command);
 
-  logger.info("Waiting for API on localhost:3002");
-  await waitForPort(3002, "localhost");
+  logger.info(`Waiting for API on localhost:${PORT}`);
+  await waitForPort(Number(PORT), "localhost");
 
   await waitForTermination(services);
 }
@@ -462,6 +494,8 @@ async function waitForTermination(services: Services): Promise<void> {
   if (services.api) promises.push(services.api.promise);
   if (services.worker) promises.push(services.worker.promise);
   if (services.indexWorker) promises.push(services.indexWorker.promise);
+  if (services.nuqPrefetchWorker)
+    promises.push(services.nuqPrefetchWorker.promise);
 
   promises.push(...services.nuqWorkers.map(w => w.promise));
 

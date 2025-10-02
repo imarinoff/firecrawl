@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { shutdownOtel } from "../otel";
 import "./sentry";
 import * as Sentry from "@sentry/node";
 import {
@@ -28,16 +29,9 @@ import http from "http";
 import https from "https";
 import { cacheableLookup } from "../scraper/scrapeURL/lib/cacheableLookup";
 import { robustFetch } from "../scraper/scrapeURL/lib/fetch";
-import { NodeSDK } from "@opentelemetry/sdk-node";
-import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentations-node";
-import { LangfuseExporter } from "langfuse-vercel";
-import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-node";
-import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
-import { resourceFromAttributes } from "@opentelemetry/resources";
-import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-grpc";
 import { BullMQOtel } from "bullmq-otel";
-import { pathToFileURL } from "url";
 import { getErrorContactMessage } from "../lib/deployment";
+import { initializeBlocklist } from "../scraper/WebScraper/utils/blocklist";
 
 configDotenv();
 
@@ -59,35 +53,6 @@ const runningJobs: Set<string> = new Set();
 // Install cacheable lookup for all other requests
 cacheableLookup.install(http.globalAgent);
 cacheableLookup.install(https.globalAgent);
-
-const shouldOtel =
-  process.env.LANGFUSE_PUBLIC_KEY || process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
-const otelSdk = shouldOtel
-  ? new NodeSDK({
-      resource: resourceFromAttributes({
-        [ATTR_SERVICE_NAME]: "firecrawl-worker",
-      }),
-      spanProcessors: [
-        ...(process.env.LANGFUSE_PUBLIC_KEY
-          ? [new BatchSpanProcessor(new LangfuseExporter())]
-          : []),
-        ...(process.env.OTEL_EXPORTER_OTLP_ENDPOINT
-          ? [
-              new BatchSpanProcessor(
-                new OTLPTraceExporter({
-                  url: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,
-                }),
-              ),
-            ]
-          : []),
-      ],
-      instrumentations: [getNodeAutoInstrumentations()],
-    })
-  : null;
-
-if (otelSdk) {
-  otelSdk.start();
-}
 
 const processExtractJobInternal = async (
   token: string,
@@ -496,6 +461,11 @@ app.listen(workerPort, () => {
 });
 
 (async () => {
+  await initializeBlocklist().catch(e => {
+    _logger.error("Failed to initialize blocklist", { error: e });
+    process.exit(1);
+  });
+
   await Promise.all([
     workerFun(getExtractQueue(), processExtractJobInternal),
     workerFun(getDeepResearchQueue(), processDeepResearchJobInternal),
@@ -509,8 +479,6 @@ app.listen(workerPort, () => {
   }
 
   console.log("All jobs finished. Worker out!");
-  if (otelSdk) {
-    await otelSdk.shutdown();
-  }
+  await shutdownOtel();
   process.exit(0);
 })();

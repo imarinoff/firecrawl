@@ -40,7 +40,6 @@ import { normalizeUrl } from "../canonical-url";
 import { search } from "../../search";
 import { buildRephraseToSerpPrompt } from "./build-prompts";
 import { getACUCTeam } from "../../controllers/auth";
-import { langfuse } from "../../services/langfuse";
 import { CostLimitExceededError, CostTracking } from "../cost-tracking";
 
 interface ExtractServiceOptions {
@@ -101,16 +100,6 @@ export async function performExtraction(
     method: "performExtraction",
     extractId,
     teamId,
-  });
-
-  langfuse.trace({
-    id: "extract:" + extractId,
-    name: "performExtraction",
-    metadata: {
-      teamId,
-      extractId,
-      model: "fire-1",
-    },
   });
 
   try {
@@ -844,7 +833,8 @@ export async function performExtraction(
 
       if (docsMap.size == 0) {
         // All urls are invalid
-        const errorMessage = "All provided URLs are either invalid, unsupported or failed to be scraped.";
+        const errorMessage =
+          "All provided URLs are either invalid, unsupported or failed to be scraped.";
         logger.error(errorMessage);
         const tokens_billed = 300 + calculateThinkingCost(costTracking);
         await billTeam(
@@ -976,11 +966,11 @@ export async function performExtraction(
 
     let finalResult = reqSchema
       ? await mixSchemaObjects(
-        reqSchema,
-        singleAnswerResult,
-        multiEntityResult,
-        logger.child({ method: "mixSchemaObjects" }),
-      )
+          reqSchema,
+          singleAnswerResult,
+          multiEntityResult,
+          logger.child({ method: "mixSchemaObjects" }),
+        )
       : singleAnswerResult || multiEntityResult;
 
     // Tokenize final result to get token count
